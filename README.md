@@ -1,29 +1,36 @@
 # Running Efficiency — Strava Performance Analyzer
 
 Visualizes your running performance over time using data from the Strava API.
+Available as a **web app** (recommended) or a **CLI tool**.
 
 ## What it shows
 
 - **Pace over time** — are you getting faster?
 - **Weekly distance** — training volume trends
-- **Heart rate trends** — aerobic fitness over time
-- **Longest run per month** — endurance progression
-- **Runs per month** — consistency
-- **Pace vs distance scatter** — effort distribution across run lengths
+- **Heart rate & aerobic efficiency** — fitness over time
+- **Fitness / Fatigue / Form** — Performance Management Chart (CTL/ATL/TSB)
+- **Personal records** — best pace at 1K, 5K, 10K, half, full marathon
+- **Year-over-year** — monthly mileage comparison across years
+- **Cumulative distance** — total km banked
 
 ## Setup
 
 ### 1. Create a Strava API app
 
 1. Go to https://www.strava.com/settings/api
-2. Create an application (any name, set *Authorization Callback Domain* to `localhost`)
+2. Create an application — set **Authorization Callback Domain** to `localhost`
 3. Copy your **Client ID** and **Client Secret**
 
 ### 2. Configure environment
 
 ```bash
 cp .env.example .env
-# Edit .env and fill in your Client ID and Client Secret
+# Edit .env — fill in Client ID, Client Secret, and a random Flask secret key
+```
+
+Generate a Flask secret key with:
+```bash
+python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
 ### 3. Install dependencies
@@ -32,12 +39,25 @@ cp .env.example .env
 pip install -r requirements.txt
 ```
 
-### 4. Run
+---
+
+## Web App (recommended)
+
+```bash
+python app.py
+```
+
+Open http://localhost:5000, click **Connect with Strava**, and authorize.
+Your dashboard loads with interactive charts. Token is stored in the session
+and refreshed automatically.
+
+---
+
+## CLI Tool
 
 ```bash
 python analyze.py
 ```
 
-A browser window will open asking you to authorize the app with Strava. After authorizing, the script fetches your runs, prints a summary, and saves a chart to `output/performance.png`.
-
-Your token is saved in `token.json` and refreshed automatically on subsequent runs — you only authorize once.
+Opens a browser for one-time authorization, fetches all runs, prints a summary,
+and saves two chart images to `output/`.

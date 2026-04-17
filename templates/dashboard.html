@@ -1,0 +1,407 @@
+{% extends "base.html" %}
+
+{% block head %}
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" defer></script>
+{% endblock %}
+
+{% block content %}
+<div class="app">
+
+  <!-- Sidebar -->
+  <nav class="sidebar">
+    <div class="sidebar-brand">
+      <span class="brand-icon">🏃</span>
+      <span class="brand-name">RunEfficiency</span>
+    </div>
+    <ul class="sidebar-nav">
+      <li><a href="#overview"   class="nav-link active">Overview</a></li>
+      <li><a href="#pace"       class="nav-link">Pace</a></li>
+      <li><a href="#volume"     class="nav-link">Volume</a></li>
+      <li><a href="#fitness"    class="nav-link">Fitness</a></li>
+      <li><a href="#records"    class="nav-link">Records</a></li>
+      <li><a href="#efficiency" class="nav-link">Efficiency</a></li>
+    </ul>
+    <div class="sidebar-footer">
+      <div class="athlete-info">
+        {% if athlete.get('profile_medium') %}
+          <img src="{{ athlete.profile_medium }}" class="avatar" alt="avatar" />
+        {% endif %}
+        <span class="athlete-name">
+          {{ athlete.get('firstname', '') }} {{ athlete.get('lastname', '') }}
+        </span>
+      </div>
+      <a href="{{ url_for('logout') }}" class="btn-logout">Logout</a>
+    </div>
+  </nav>
+
+  <!-- Main content -->
+  <main class="main">
+
+    <!-- Loading overlay -->
+    <div class="loading-overlay" id="loadingOverlay">
+      <div class="loader-box">
+        <div class="spinner"></div>
+        <p class="loader-text">Fetching your runs from Strava…</p>
+        <p class="loader-sub" id="loaderSub">This may take a moment for large activity histories.</p>
+      </div>
+    </div>
+
+    <!-- Error banner -->
+    <div class="error-banner" id="errorBanner" style="display:none">
+      <span id="errorMsg"></span>
+    </div>
+
+    <div class="content" id="content" style="display:none">
+
+      <!-- Section: Overview -->
+      <section id="overview" class="section">
+        <h2 class="section-title">Overview</h2>
+        <div class="stat-grid" id="statCards"></div>
+      </section>
+
+      <!-- Section: Pace -->
+      <section id="pace" class="section">
+        <h2 class="section-title">Pace Over Time</h2>
+        <div class="card"><div id="chartPace" class="chart"></div></div>
+      </section>
+
+      <!-- Section: Volume -->
+      <section id="volume" class="section">
+        <h2 class="section-title">Training Volume</h2>
+        <div class="card-row">
+          <div class="card"><div id="chartWeekly" class="chart"></div></div>
+          <div class="card"><div id="chartYoY" class="chart chart-tall"></div></div>
+        </div>
+      </section>
+
+      <!-- Section: Fitness -->
+      <section id="fitness" class="section">
+        <h2 class="section-title">Fitness, Fatigue &amp; Form</h2>
+        <p class="section-desc">
+          <strong>Fitness (CTL)</strong> — 42-day load average &nbsp;·&nbsp;
+          <strong>Fatigue (ATL)</strong> — 7-day load average &nbsp;·&nbsp;
+          <strong>Form (TSB)</strong> — Fitness minus Fatigue
+        </p>
+        <div class="card"><div id="chartPMC" class="chart chart-tall"></div></div>
+        <div class="card" style="margin-top:16px"><div id="chartCumulative" class="chart"></div></div>
+      </section>
+
+      <!-- Section: Records -->
+      <section id="records" class="section">
+        <h2 class="section-title">Personal Records</h2>
+        <div class="pr-grid" id="prCards"></div>
+      </section>
+
+      <!-- Section: Efficiency -->
+      <section id="efficiency" class="section">
+        <h2 class="section-title">Aerobic Efficiency</h2>
+        <p class="section-desc">Speed ÷ heart rate — a rising trend means you're running faster at the same effort.</p>
+        <div class="card"><div id="chartEfficiency" class="chart"></div></div>
+      </section>
+
+    </div><!-- /content -->
+  </main>
+</div>
+
+<script>
+const STRAVA_ORANGE = '#FC4C02';
+const BLUE  = '#2563EB';
+const GREEN = '#16A34A';
+const RED   = '#DC2626';
+const TEAL  = '#0D9488';
+const PURPLE = '#7C3AED';
+const GREY  = '#94A3B8';
+
+const plotDefaults = {
+  font: { family: 'Inter, sans-serif', size: 12 },
+  paper_bgcolor: 'transparent',
+  plot_bgcolor: 'transparent',
+  margin: { t: 24, r: 16, b: 48, l: 56 },
+  xaxis: { gridcolor: '#F1F5F9', zeroline: false },
+  yaxis: { gridcolor: '#F1F5F9', zeroline: false },
+  showlegend: true,
+  legend: { orientation: 'h', x: 0, y: 1.08 },
+};
+
+const plotConfig = { responsive: true, displayModeBar: false };
+
+function paceTickFormat(val) {
+  // val in min/km — display as M:SS
+  const m = Math.floor(val);
+  const s = Math.round((val - m) * 60);
+  return `${m}:${String(s).padStart(2,'0')}`;
+}
+
+// ── fetch & render ────────────────────────────────────────────────────────────
+
+async function loadData() {
+  try {
+    const resp = await fetch('/api/data');
+    const data = await resp.json();
+
+    if (data.error) {
+      document.getElementById('errorMsg').textContent = data.error;
+      document.getElementById('errorBanner').style.display = 'flex';
+      document.getElementById('loadingOverlay').style.display = 'none';
+      return;
+    }
+
+    renderStatCards(data.summary);
+    renderPrCards(data.prs);
+    renderPaceChart(data.runs);
+    renderWeeklyChart(data.weekly);
+    renderYoYChart(data.yoy);
+    renderPMC(data.fitness);
+    renderCumulative(data.cumulative);
+    renderEfficiency(data.efficiency);
+
+    document.getElementById('loadingOverlay').style.display = 'none';
+    document.getElementById('content').style.display = 'block';
+  } catch (err) {
+    document.getElementById('errorMsg').textContent = 'Failed to load data: ' + err.message;
+    document.getElementById('errorBanner').style.display = 'flex';
+    document.getElementById('loadingOverlay').style.display = 'none';
+  }
+}
+
+// ── stat cards ────────────────────────────────────────────────────────────────
+
+function renderStatCards(s) {
+  const cards = [
+    { label: 'Total Runs',     value: s.total_runs,    unit: '',    icon: '🏃' },
+    { label: 'Total Distance', value: s.total_km,      unit: ' km', icon: '🗺️' },
+    { label: 'Avg Run Length', value: s.avg_distance,  unit: ' km', icon: '📏' },
+    s.recent_pace  ? { label: 'Recent Pace',  value: s.recent_pace,  unit: ' /km', icon: '⚡', sub: s.pace_improved ? '▲ improving' : '▼ slower', subOk: s.pace_improved } : null,
+    s.early_pace   ? { label: 'Early Pace',   value: s.early_pace,   unit: ' /km', icon: '🕰️' } : null,
+    s.avg_hr       ? { label: 'Avg Heart Rate', value: s.avg_hr,     unit: ' bpm', icon: '❤️' } : null,
+  ].filter(Boolean);
+
+  document.getElementById('statCards').innerHTML = cards.map(c => `
+    <div class="stat-card">
+      <div class="stat-icon">${c.icon}</div>
+      <div class="stat-body">
+        <div class="stat-value">${c.value}${c.unit}</div>
+        <div class="stat-label">${c.label}</div>
+        ${c.sub ? `<div class="stat-sub ${c.subOk ? 'ok' : 'warn'}">${c.sub}</div>` : ''}
+      </div>
+    </div>
+  `).join('');
+}
+
+// ── PR cards ──────────────────────────────────────────────────────────────────
+
+function renderPrCards(prs) {
+  if (!prs || !Object.keys(prs).length) {
+    document.getElementById('prCards').innerHTML = '<p class="muted">Not enough data for personal records yet.</p>';
+    return;
+  }
+  document.getElementById('prCards').innerHTML = Object.entries(prs).map(([label, info]) => `
+    <div class="pr-card">
+      <div class="pr-dist">${label}</div>
+      <div class="pr-pace">${info.pace} <span class="pr-unit">min/km</span></div>
+      <div class="pr-meta">${info.distance_km} km &nbsp;·&nbsp; ${info.date}</div>
+    </div>
+  `).join('');
+}
+
+// ── pace chart ────────────────────────────────────────────────────────────────
+
+function renderPaceChart(runs) {
+  const valid = runs.filter(r => r.pace_min_km != null);
+  const dates = valid.map(r => r.date);
+  const paces = valid.map(r => r.pace_min_km);
+
+  // 10-run rolling mean
+  const smoothed = paces.map((_, i) => {
+    const slice = paces.slice(Math.max(0, i - 9), i + 1);
+    return slice.reduce((a, b) => a + b, 0) / slice.length;
+  });
+
+  Plotly.newPlot('chartPace', [
+    {
+      x: dates, y: paces,
+      mode: 'markers', name: 'Each run',
+      marker: { color: BLUE, size: 5, opacity: 0.4 },
+    },
+    {
+      x: dates, y: smoothed,
+      mode: 'lines', name: '10-run average',
+      line: { color: BLUE, width: 2.5 },
+    },
+  ], {
+    ...plotDefaults,
+    yaxis: {
+      ...plotDefaults.yaxis,
+      autorange: 'reversed',
+      tickformat: '',
+      tickvals: generatePaceTicks(paces),
+      ticktext: generatePaceTicks(paces).map(paceTickFormat),
+      title: { text: 'min/km', font: { size: 11 } },
+    },
+    xaxis: { ...plotDefaults.xaxis },
+  }, plotConfig);
+}
+
+function generatePaceTicks(paces) {
+  const min = Math.floor(Math.min(...paces));
+  const max = Math.ceil(Math.max(...paces));
+  const ticks = [];
+  for (let v = min; v <= max; v += 0.5) ticks.push(v);
+  return ticks;
+}
+
+// ── weekly volume chart ───────────────────────────────────────────────────────
+
+function renderWeeklyChart(weekly) {
+  const weeks = weekly.map(w => w.week);
+  const kms   = weekly.map(w => w.total_km);
+  const avg4  = kms.map((_, i) => {
+    const slice = kms.slice(Math.max(0, i - 3), i + 1);
+    return slice.reduce((a, b) => a + b, 0) / slice.length;
+  });
+
+  Plotly.newPlot('chartWeekly', [
+    {
+      x: weeks, y: kms,
+      type: 'bar', name: 'Weekly km',
+      marker: { color: GREEN, opacity: 0.7 },
+    },
+    {
+      x: weeks, y: avg4,
+      mode: 'lines', name: '4-week avg',
+      line: { color: GREEN, width: 2.5 },
+    },
+  ], {
+    ...plotDefaults,
+    title: { text: 'Weekly Distance', font: { size: 13 } },
+    yaxis: { ...plotDefaults.yaxis, title: { text: 'km', font: { size: 11 } } },
+  }, plotConfig);
+}
+
+// ── year-over-year ────────────────────────────────────────────────────────────
+
+function renderYoYChart(yoy) {
+  const colors = [BLUE, STRAVA_ORANGE, GREEN, PURPLE, TEAL, RED];
+  const traces = Object.entries(yoy.years).map(([year, vals], i) => ({
+    x: yoy.months, y: vals,
+    name: year, type: 'bar',
+    marker: { color: colors[i % colors.length], opacity: 0.85 },
+  }));
+
+  Plotly.newPlot('chartYoY', traces, {
+    ...plotDefaults,
+    barmode: 'group',
+    title: { text: 'Year-over-Year Monthly Distance', font: { size: 13 } },
+    yaxis: { ...plotDefaults.yaxis, title: { text: 'km', font: { size: 11 } } },
+    margin: { ...plotDefaults.margin, b: 40 },
+  }, plotConfig);
+}
+
+// ── performance management chart (CTL / ATL / TSB) ───────────────────────────
+
+function renderPMC(fitness) {
+  const dates = fitness.map(r => r.date);
+  const ctl   = fitness.map(r => r.CTL);
+  const atl   = fitness.map(r => r.ATL);
+  const tsb   = fitness.map(r => r.TSB);
+
+  Plotly.newPlot('chartPMC', [
+    {
+      x: dates, y: ctl,
+      mode: 'lines', name: 'Fitness (CTL)',
+      line: { color: BLUE, width: 2.5 },
+      fill: 'tozeroy', fillcolor: 'rgba(37,99,235,0.07)',
+    },
+    {
+      x: dates, y: atl,
+      mode: 'lines', name: 'Fatigue (ATL)',
+      line: { color: STRAVA_ORANGE, width: 1.8, dash: 'dash' },
+    },
+    {
+      x: dates, y: tsb,
+      mode: 'lines', name: 'Form (TSB)',
+      line: { color: GREY, width: 1.5 },
+      yaxis: 'y2',
+      fill: 'tozeroy',
+      fillcolor: tsb.map(v => v >= 0 ? 'rgba(22,163,74,0.15)' : 'rgba(220,38,38,0.1)').join(''),
+    },
+  ], {
+    ...plotDefaults,
+    yaxis: { ...plotDefaults.yaxis, title: { text: 'Load (arb.)', font: { size: 11 } } },
+    yaxis2: {
+      overlaying: 'y', side: 'right',
+      title: { text: 'Form (TSB)', font: { size: 11 } },
+      gridcolor: 'transparent', zeroline: true, zerolinecolor: '#CBD5E1',
+    },
+  }, plotConfig);
+}
+
+// ── cumulative distance ───────────────────────────────────────────────────────
+
+function renderCumulative(data) {
+  Plotly.newPlot('chartCumulative', [
+    {
+      x: data.map(r => r.date),
+      y: data.map(r => r.cumulative_km),
+      mode: 'lines', name: 'Cumulative km',
+      line: { color: PURPLE, width: 2.5 },
+      fill: 'tozeroy', fillcolor: 'rgba(124,58,237,0.08)',
+    },
+  ], {
+    ...plotDefaults,
+    showlegend: false,
+    title: { text: 'Cumulative Distance', font: { size: 13 } },
+    yaxis: { ...plotDefaults.yaxis, title: { text: 'km', font: { size: 11 } } },
+  }, plotConfig);
+}
+
+// ── aerobic efficiency ────────────────────────────────────────────────────────
+
+function renderEfficiency(data) {
+  if (!data || data.length < 3) {
+    document.getElementById('chartEfficiency').innerHTML =
+      '<p class="muted" style="padding:40px;text-align:center">Heart rate data not available — record runs with a HR monitor to see this chart.</p>';
+    return;
+  }
+  const dates = data.map(r => r.date);
+  const vals  = data.map(r => r.efficiency);
+  const smooth = vals.map((_, i) => {
+    const s = vals.slice(Math.max(0, i - 9), i + 1);
+    return s.reduce((a, b) => a + b, 0) / s.length;
+  });
+
+  Plotly.newPlot('chartEfficiency', [
+    {
+      x: dates, y: vals,
+      mode: 'markers', name: 'Each run',
+      marker: { color: TEAL, size: 5, opacity: 0.4 },
+    },
+    {
+      x: dates, y: smooth,
+      mode: 'lines', name: '10-run average',
+      line: { color: TEAL, width: 2.5 },
+    },
+  ], {
+    ...plotDefaults,
+    yaxis: { ...plotDefaults.yaxis, title: { text: 'm/min per bpm', font: { size: 11 } } },
+  }, plotConfig);
+}
+
+// ── nav highlight on scroll ───────────────────────────────────────────────────
+
+function updateActiveNav() {
+  const sections = document.querySelectorAll('.section');
+  const links = document.querySelectorAll('.nav-link');
+  let current = '';
+  sections.forEach(s => {
+    if (window.scrollY >= s.offsetTop - 120) current = s.id;
+  });
+  links.forEach(l => {
+    l.classList.toggle('active', l.getAttribute('href') === '#' + current);
+  });
+}
+
+window.addEventListener('scroll', updateActiveNav, { passive: true });
+document.addEventListener('DOMContentLoaded', loadData);
+</script>
+{% endblock %}
