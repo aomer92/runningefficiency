@@ -4,13 +4,15 @@ Running performance analyzer.
 Usage:
     python analyze.py
 
-Produces a multi-panel chart saved to output/performance.png and displayed
-on screen. Requires .env with STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET.
+Produces two charts saved to output/ and displayed on screen:
+  performance.png  — pace, volume, HR, distance trends
+  advanced.png     — fitness/fatigue/form, personal records, year-over-year
+
+Requires .env with STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET.
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import matplotlib.dates as mdates
@@ -18,6 +20,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from metrics import compute_fitness_fatigue, find_prs, year_over_year
 from strava_api import StravaClient
 from strava_auth import get_token
 
@@ -202,6 +205,165 @@ def plot_performance(df: pd.DataFrame, athlete_name: str) -> None:
     plt.show()
 
 
+# ── advanced chart ────────────────────────────────────────────────────────────
+
+def plot_advanced(df: pd.DataFrame, athlete_name: str) -> None:
+    """Second chart page: fitness/fatigue/form, personal records, year-over-year."""
+    if df.empty:
+        return
+
+    fig = plt.figure(figsize=(14, 16))
+    fig.suptitle(
+        f"{athlete_name} — Advanced Metrics",
+        fontsize=16,
+        fontweight="bold",
+        y=0.98,
+    )
+
+    palette = {
+        "blue": "#2563EB",
+        "green": "#16A34A",
+        "red": "#DC2626",
+        "orange": "#EA580C",
+        "purple": "#7C3AED",
+        "teal": "#0D9488",
+    }
+
+    def style_date_ax(ax, title, ylabel):
+        ax.set_title(title, fontsize=11, fontweight="bold", pad=8)
+        ax.set_ylabel(ylabel, fontsize=9)
+        ax.tick_params(axis="both", labelsize=8)
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b '%y"))
+        ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+        plt.setp(ax.xaxis.get_majorticklabels(), rotation=30, ha="right")
+        ax.grid(axis="y", alpha=0.3, linestyle="--")
+        ax.spines[["top", "right"]].set_visible(False)
+
+    # 1. Fitness / Fatigue / Form (CTL / ATL / TSB) — tall panel, full width
+    ax1 = fig.add_subplot(3, 1, 1)
+    ff = compute_fitness_fatigue(df)
+
+    ax1.fill_between(ff["date"], ff["CTL"], alpha=0.15, color=palette["blue"])
+    ax1.plot(ff["date"], ff["CTL"], color=palette["blue"], linewidth=2, label="Fitness (CTL 42d)")
+    ax1.plot(ff["date"], ff["ATL"], color=palette["orange"], linewidth=1.5,
+             linestyle="--", label="Fatigue (ATL 7d)")
+
+    ax_tsb = ax1.twinx()
+    ax_tsb.fill_between(
+        ff["date"], ff["TSB"], 0,
+        where=(ff["TSB"] >= 0), alpha=0.2, color=palette["green"], label="Form +"
+    )
+    ax_tsb.fill_between(
+        ff["date"], ff["TSB"], 0,
+        where=(ff["TSB"] < 0), alpha=0.2, color=palette["red"], label="Form −"
+    )
+    ax_tsb.axhline(0, color="grey", linewidth=0.8, linestyle=":")
+    ax_tsb.set_ylabel("Form (TSB)", fontsize=9, color="grey")
+    ax_tsb.tick_params(axis="y", labelsize=8, labelcolor="grey")
+    ax_tsb.spines[["top"]].set_visible(False)
+
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax_tsb.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc="upper left")
+    style_date_ax(ax1, "Performance Management Chart (Fitness / Fatigue / Form)", "Load (arb. units)")
+
+    # 2. Personal Records table — bottom left
+    ax2 = fig.add_subplot(3, 2, 3)
+    ax2.axis("off")
+    prs = find_prs(df)
+    if prs:
+        rows = [
+            [
+                label,
+                format_pace(info["pace"]),
+                f"{info['distance_km']:.2f} km",
+                info["date"].strftime("%d %b %Y"),
+            ]
+            for label, info in prs.items()
+        ]
+        tbl = ax2.table(
+            cellText=rows,
+            colLabels=["Distance", "Best Pace", "Actual dist.", "Date"],
+            cellLoc="center",
+            loc="center",
+        )
+        tbl.auto_set_font_size(False)
+        tbl.set_fontsize(9)
+        tbl.scale(1, 1.6)
+        for (r, c), cell in tbl.get_celld().items():
+            cell.set_edgecolor("#dddddd")
+            if r == 0:
+                cell.set_facecolor("#2563EB")
+                cell.set_text_props(color="white", fontweight="bold")
+            elif r % 2 == 0:
+                cell.set_facecolor("#f0f4ff")
+    ax2.set_title("Personal Records (best pace ±15% of distance)", fontsize=11, fontweight="bold", pad=8)
+
+    # 3. Year-over-year monthly mileage — bottom right
+    ax3 = fig.add_subplot(3, 2, 4)
+    yoy = year_over_year(df)
+    years = yoy.columns.tolist()
+    months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    x = np.arange(12)
+    bar_width = 0.8 / max(len(years), 1)
+    year_colors = plt.cm.tab10(np.linspace(0, 0.6, len(years)))
+
+    for i, (year, color) in enumerate(zip(years, year_colors)):
+        vals = yoy[year].fillna(0).values
+        ax3.bar(x + i * bar_width, vals, width=bar_width, label=str(year),
+                color=color, alpha=0.85)
+
+    ax3.set_xticks(x + bar_width * (len(years) - 1) / 2)
+    ax3.set_xticklabels(months, fontsize=8)
+    ax3.set_title("Year-over-Year Monthly Distance", fontsize=11, fontweight="bold", pad=8)
+    ax3.set_ylabel("km", fontsize=9)
+    ax3.tick_params(axis="y", labelsize=8)
+    ax3.legend(fontsize=8, title="Year", title_fontsize=8)
+    ax3.grid(axis="y", alpha=0.3, linestyle="--")
+    ax3.spines[["top", "right"]].set_visible(False)
+
+    # 4. Effort efficiency: pace vs heart rate (aerobic efficiency)
+    ax4 = fig.add_subplot(3, 2, 5)
+    eff = df.dropna(subset=["pace_min_km", "heart_rate"]).copy()
+    if not eff.empty:
+        # Aerobic efficiency = speed (m/min) / heart rate
+        eff["speed_m_min"] = 1000 / eff["pace_min_km"]
+        eff["efficiency"] = eff["speed_m_min"] / eff["heart_rate"]
+        sc = ax4.scatter(
+            eff["date"], eff["efficiency"],
+            c=mdates.date2num(eff["date"]), cmap="plasma",
+            alpha=0.5, s=18,
+        )
+        smooth_eff = eff.set_index("date")["efficiency"].rolling(10, min_periods=1).mean().reset_index()
+        ax4.plot(smooth_eff["date"], smooth_eff["efficiency"], color=palette["teal"],
+                 linewidth=2, label="10-run avg")
+        ax4.legend(fontsize=8)
+        style_date_ax(ax4, "Aerobic Efficiency (speed / HR, higher = better)", "m/min per bpm")
+    else:
+        ax4.text(0.5, 0.5, "Heart rate data not available",
+                 ha="center", va="center", transform=ax4.transAxes, color="grey")
+        ax4.axis("off")
+
+    # 5. Cumulative distance (progress line)
+    ax5 = fig.add_subplot(3, 2, 6)
+    df_sorted = df.sort_values("date")
+    ax5.fill_between(df_sorted["date"], df_sorted["distance_km"].cumsum(),
+                     alpha=0.2, color=palette["purple"])
+    ax5.plot(df_sorted["date"], df_sorted["distance_km"].cumsum(),
+             color=palette["purple"], linewidth=2)
+    style_date_ax(ax5, "Cumulative Distance", "km")
+
+    plt.tight_layout(rect=[0, 0, 1, 0.97])
+
+    output_dir = Path("output")
+    output_dir.mkdir(exist_ok=True)
+    output_path = output_dir / "advanced.png"
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"Chart saved to {output_path}")
+    plt.show()
+
+
 # ── summary stats ─────────────────────────────────────────────────────────────
 
 def print_summary(df: pd.DataFrame) -> None:
@@ -212,7 +374,6 @@ def print_summary(df: pd.DataFrame) -> None:
     total_km = df["distance_km"].sum()
     date_range = f"{df['date'].min().strftime('%b %Y')} → {df['date'].max().strftime('%b %Y')}"
 
-    # Compare first vs last 10 runs by pace
     valid = df.dropna(subset=["pace_min_km"])
     if len(valid) >= 20:
         early_pace = valid.head(10)["pace_min_km"].mean()
@@ -220,7 +381,7 @@ def print_summary(df: pd.DataFrame) -> None:
         pace_delta = early_pace - recent_pace
         improvement = f"+{pace_delta:.2f} min/km faster" if pace_delta > 0 else f"{pace_delta:.2f} min/km"
     else:
-        early_pace = recent_pace = pace_delta = None
+        early_pace = recent_pace = None
         improvement = "not enough data"
 
     print("\n" + "=" * 50)
@@ -237,6 +398,13 @@ def print_summary(df: pd.DataFrame) -> None:
     hr_df = df.dropna(subset=["heart_rate"])
     if not hr_df.empty:
         print(f"Avg heart rate:  {hr_df['heart_rate'].mean():.0f} bpm")
+
+    prs = find_prs(df)
+    if prs:
+        print("\nPersonal Records:")
+        for label, info in prs.items():
+            print(f"  {label:<16} {format_pace(info['pace'])} min/km  ({info['date'].strftime('%d %b %Y')})")
+
     print("=" * 50)
 
 
@@ -263,7 +431,10 @@ def main() -> None:
 
     df = load_dataframe(runs)
     print_summary(df)
-    plot_performance(df, name or "Athlete")
+
+    label = name or "Athlete"
+    plot_performance(df, label)
+    plot_advanced(df, label)
 
 
 if __name__ == "__main__":
